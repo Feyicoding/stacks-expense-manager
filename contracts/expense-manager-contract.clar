@@ -113,3 +113,138 @@
         (> (+ current-spent amount) (get budget category-info))
     )
 )
+
+;; public functions
+;;
+
+;; Create a new expense
+(define-public (create-expense (amount uint) (description (string-ascii 100)) (category-id uint) (date uint))
+    (begin
+        ;; Validate inputs
+        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        (asserts! (category-exists? category-id) ERR-CATEGORY-NOT-FOUND)
+        (asserts! (> date u0) ERR-INVALID-DATE)
+        
+        (let ((expense-id (get-next-expense-id)))
+            ;; Create the expense
+            (map-set expenses expense-id {
+                creator: tx-sender,
+                amount: amount,
+                description: description,
+                category-id: category-id,
+                date: date,
+                status: u0, ;; pending
+                approver: none,
+                notes: none
+            })
+            
+            ;; Add to user's expense list
+            (add-expense-to-user expense-id tx-sender)
+            
+            (ok expense-id)
+        )
+    )
+)
+
+;; Approve an expense
+(define-public (approve-expense (expense-id uint) (notes (optional (string-ascii 100))))
+    (let ((expense (unwrap! (map-get? expenses expense-id) ERR-EXPENSE-NOT-FOUND)))
+        ;; Validate
+        (asserts! (or (is-admin) (is-eq tx-sender (get creator expense))) ERR-NOT-AUTHORIZED)
+        (asserts! (is-eq (get status expense) u0) ERR-ALREADY-APPROVED)
+        
+        ;; Update expense status
+        (map-set expenses expense-id (merge expense {
+            status: u1, ;; approved
+            approver: (some tx-sender),
+            notes: notes
+        }))
+        
+        ;; Update category spent
+        (update-category-spent (get category-id expense) (get amount expense))
+        
+        (ok true)
+    )
+)
+
+;; Reject an expense
+(define-public (reject-expense (expense-id uint) (notes (optional (string-ascii 100))))
+    (let ((expense (unwrap! (map-get? expenses expense-id) ERR-EXPENSE-NOT-FOUND)))
+        ;; Validate
+        (asserts! (or (is-admin) (is-eq tx-sender (get creator expense))) ERR-NOT-AUTHORIZED)
+        (asserts! (is-eq (get status expense) u0) ERR-ALREADY-REJECTED)
+        
+        ;; Update expense status
+        (map-set expenses expense-id (merge expense {
+            status: u2, ;; rejected
+            approver: (some tx-sender),
+            notes: notes
+        }))
+        
+        (ok true)
+    )
+)
+
+;; Create a new category
+(define-public (create-category (name (string-ascii 50)) (budget uint) (description (string-ascii 100)))
+    (begin
+        (let ((category-id (get-next-category-id)))
+            ;; Create the category
+            (map-set categories category-id {
+                name: name,
+                budget: budget,
+                description: description,
+                created-by: tx-sender
+            })
+            
+            ;; Initialize spent amount
+            (map-set category-spent category-id u0)
+            
+            (ok category-id)
+        )
+    )
+)
+
+;; Update category budget
+(define-public (update-category-budget (category-id uint) (new-budget uint))
+    (let ((category (unwrap! (map-get? categories category-id) ERR-CATEGORY-NOT-FOUND)))
+        ;; Validate
+        (asserts! (or (is-admin) (is-eq tx-sender (get created-by category))) ERR-NOT-AUTHORIZED)
+        
+        ;; Update category
+        (map-set categories category-id (merge category {
+            budget: new-budget
+        }))
+        
+        (ok true)
+    )
+)
+
+;; Get expense details
+(define-read-only (get-expense (expense-id uint))
+    (map-get? expenses expense-id)
+)
+
+;; Get category details
+(define-read-only (get-category (category-id uint))
+    (map-get? categories category-id)
+)
+
+;; Get category spent amount
+(define-read-only (get-category-spent (category-id uint))
+    (default-to u0 (map-get? category-spent category-id))
+)
+
+;; Get user's expenses
+(define-read-only (get-user-expenses (user principal))
+    (default-to (list) (map-get? user-expenses user))
+)
+
+;; Change admin
+(define-public (set-admin (new-admin principal))
+    (begin
+        (asserts! (is-admin) ERR-NOT-AUTHORIZED)
+        (var-set admin new-admin)
+        (ok true)
+    )
+)
